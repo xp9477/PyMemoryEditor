@@ -44,7 +44,7 @@ with OpenProcess(window_title = title) as process:
 # Getting memory addresses by a target value:
 You can look up a value in memory and get the address of all matches, like this:
 ```py
-for address process.search_by_value(int, 4, target_value):
+for address in process.search_by_value(int, 4, target_value):
     print("Found address:", address)
 ```
 
@@ -53,14 +53,14 @@ There are many options to scan the memory. Check all available options in [`Scan
 
 The default option is `EXACT_VALUE`, but you can change it at `scan_type` parameter:
 ```py
-for address process.search_by_value(int, 4, target_value, scan_type = ScanTypesEnum.BIGGER_THAN):
+for address in process.search_by_value(int, 4, target_value, scan_type = ScanTypesEnum.BIGGER_THAN):
     print("Found address:", address)
 ```
 
 ## Extra information from search_by_value method:
 This method also has the `progress_information` parameter that returns a dictionary containing search progress information.
 ```py
-for address, info process.search_by_value(int, 4, target_value, progress_information = True):
+for address, info in process.search_by_value(int, 4, target_value, progress_information = True):
     template = "Address: 0x{:<10X} | Progress: {:.1f}%"
     progress = info["progress"] * 100
     

@@ -1,119 +1,56 @@
 # -*- coding: utf-8 -*-
 
-# Read more about operations with processes by win32 api here:
-# https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/
-# https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/
-# https://learn.microsoft.com/en-us/windows/win32/api/psapi/
-# ...
+# Read more about process_vm_(read/write)v here:
+# https://man7.org/linux/man-pages/man2/process_vm_readv.2.html
+
+# Read more about proc and memory mapping here:
+# https://man7.org/linux/man-pages/man5/proc.5.html
+
+from ctypes import addressof, sizeof
+from typing import Dict, Generator, Optional, Sequence, Tuple, Type, TypeVar, Union
 
 from ..enums import ScanTypesEnum
 from ..util import convert_from_byte_array, get_c_type_of, scan_memory, scan_memory_for_exact_value
-
-from .enums import MemoryAllocationStatesEnum, MemoryProtectionsEnum, MemoryTypesEnum
-from .types import MEMORY_BASIC_INFORMATION, SYSTEM_INFO, WNDENUMPROC
-
-from typing import Dict, Generator, Optional, Sequence, Tuple, Type, TypeVar, Union
+from .ptrace import libc
+from .types import MEMORY_BASIC_INFORMATION, iovec
 
 import ctypes
-import ctypes.wintypes
-
-# Load the libraries.
-kernel32 = ctypes.windll.LoadLibrary("kernel32.dll")
-user32 = ctypes.windll.LoadLibrary("user32.dll")
-
-# Set the argtypes to prevent ArgumentError.
-kernel32.VirtualQueryEx.argtypes = (
-    ctypes.wintypes.HANDLE, ctypes.wintypes.LPCVOID, ctypes.POINTER(MEMORY_BASIC_INFORMATION), ctypes.c_uint32
-)
-
-
-# Get the user's system information.
-system_information = SYSTEM_INFO()
-kernel32.GetSystemInfo(ctypes.byref(system_information))
 
 
 T = TypeVar("T")
 
 
-def CloseProcessHandle(process_handle: int) -> int:
-    """
-    Close the process handle.
-    """
-    return kernel32.CloseHandle(process_handle)
-
-
-def GetMemoryRegions(process_handle: int) -> Generator[dict, None, None]:
+def get_memory_regions(pid: int) -> Generator[dict, None, None]:
     """
     Generates dictionaries with the address and size of a region used by the process.
     """
-    mem_region_begin = system_information.lpMinimumApplicationAddress
-    mem_region_end = system_information.lpMaximumApplicationAddress
+    mapping_filename = "/proc/{}/maps".format(pid)
 
-    current_address = mem_region_begin
+    with open(mapping_filename, "r") as mapping_file:
+        for line in mapping_file:
 
-    while current_address < mem_region_end:
-        region = MEMORY_BASIC_INFORMATION()
-        kernel32.VirtualQueryEx(process_handle, current_address, ctypes.byref(region), ctypes.sizeof(region))
+            # Each line keeps information about a memory region of the process.
+            region_information = line.split()
 
-        yield {"address": current_address, "size": region.RegionSize, "struct": region}
+            addressing_range, privileges, offset, device, inode = region_information[0: 5]
+            path = region_information[5] if len(region_information) >= 6 else str()
 
-        current_address += region.RegionSize
+            # Convert hexadecimal values to decimal.
+            start_address, end_address = [int(addr, 16) for addr in addressing_range.split("-")]
+            major_id, minor_id = [int(_id, 16) for _id in device.split(":")]
 
+            offset = int(offset, 16)
+            inode = int(inode, 16)
 
-def GetProcessHandle(access_right: int, inherit: bool, pid: int) -> int:
-    """
-    Get a process ID and return its process handle.
+            # Calculate the region size.
+            size = end_address - start_address
 
-    :param access_right: The access to the process object. This access right is
-    checked against the security descriptor for the process. This parameter can
-    be one or more of the process access rights.
-
-    :param inherit: if this value is TRUE, processes created by this process
-    will inherit the handle. Otherwise, the processes do not inherit this handle.
-
-    :param pid: The identifier of the local process to be opened.
-    """
-    return kernel32.OpenProcess(access_right, inherit, pid)
+            region = MEMORY_BASIC_INFORMATION(start_address, size, privileges.encode(), offset, major_id, minor_id, inode, path.encode())
+            yield {"address": start_address, "size": region.RegionSize, "struct": region}
 
 
-def GetProcessIdByWindowTitle(window_title: str) -> int:
-    """
-    Return the process ID by querying a window title.
-    """
-    result = ctypes.c_uint32(0)
-
-    string_buffer_size = len(window_title) + 2  # (+2) for the next possible character of a title and the NULL char.
-    string_buffer = ctypes.create_unicode_buffer(string_buffer_size)
-
-    def callback(hwnd, size):
-        """
-        This callback is used to get a window handle and compare
-        its title with the target window title.
-
-        To continue enumeration, the callback function must return TRUE;
-        to stop enumeration, it must return FALSE.
-        """
-        nonlocal result, string_buffer
-
-        user32.GetWindowTextW(hwnd, string_buffer, size)
-
-        # Compare the window titles and get the process ID.
-        if window_title == string_buffer.value:
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(result))
-            return False
-
-        # Indicate it must continue enumeration.
-        return True
-
-    # Enumerates all top-level windows on the screen by passing the handle to each window,
-    # in turn, to an application-defined callback function.
-    user32.EnumWindows(WNDENUMPROC(callback), string_buffer_size)
-
-    return result.value
-
-
-def ReadProcessMemory(
-    process_handle: int,
+def read_process_memory(
+    pid: int,
     address: int,
     pytype: Type[T],
     bufflength: int
@@ -125,13 +62,16 @@ def ReadProcessMemory(
         raise ValueError("The type must be bool, int, float, str or bytes.")
 
     data = get_c_type_of(pytype, bufflength)
-    kernel32.ReadProcessMemory(process_handle, ctypes.c_void_p(address), ctypes.byref(data), bufflength, None)
 
+    libc.process_vm_readv(
+        pid, (iovec * 1)(iovec(addressof(data), sizeof(data))),
+        1, (iovec * 1)(iovec(address, sizeof(data))), 1, 0
+    )
     return data.value.decode() if pytype is str else data.value
 
 
-def SearchAddressesByValue(
-    process_handle: int,
+def search_addresses_by_value(
+    pid: int,
     pytype: Type[T],
     bufflength: int,
     value: Union[bool, int, float, str, bytes, tuple],
@@ -160,20 +100,18 @@ def SearchAddressesByValue(
 
     target_value_bytes = tuple(conversion_buffer) if isinstance(value, tuple) else conversion_buffer[0]
 
-    # Get the memory regions, computing the total amount of memory to be scanned.
     checked_memory_size = 0
     memory_total = 0
     memory_regions = list()
 
-    for region in GetMemoryRegions(process_handle):
+    # Get the memory regions, computing the total amount of memory to be scanned.
+    for region in get_memory_regions(pid):
 
-        # Only committed, non-shared and readable memory pages.
-        if region["struct"].State != MemoryAllocationStatesEnum.MEM_COMMIT.value: continue
-        if region["struct"].Type != MemoryTypesEnum.MEM_PRIVATE.value: continue
-        if region["struct"].Protect & MemoryProtectionsEnum.PAGE_READABLE.value == 0: continue
+        # Only readable memory pages.
+        if b"r" not in region["struct"].Privileges: continue
 
         # If writeable_only is True, checks if the memory page is writeable.
-        if writeable_only and region["struct"].Protect & MemoryProtectionsEnum.PAGE_READWRITEABLE.value == 0: continue
+        if writeable_only and b"w" not in region["struct"].Privileges: continue
 
         memory_total += region["size"]
         memory_regions.append(region)
@@ -187,7 +125,10 @@ def SearchAddressesByValue(
         region_data = (ctypes.c_byte * size)()
 
         # Get data from the region.
-        kernel32.ReadProcessMemory(process_handle, ctypes.c_void_p(address), ctypes.byref(region_data), size, None)
+        libc.process_vm_readv(
+            pid, (iovec * 1)(iovec(addressof(region_data), sizeof(region_data))),
+            1, (iovec * 1)(iovec(address, sizeof(region_data))), 1, 0
+        )
 
         # Choose the searching method.
         searching_method = scan_memory
@@ -209,8 +150,8 @@ def SearchAddressesByValue(
         checked_memory_size += size
 
 
-def SearchValuesByAddresses(
-    process_handle: int,
+def search_values_by_addresses(
+    pid: int,
     pytype: Type[T],
     bufflength: int,
     addresses: Sequence[int],
@@ -228,13 +169,10 @@ def SearchValuesByAddresses(
     memory_regions = list(memory_regions) if memory_regions else list()
     addresses = sorted(addresses)
 
-    # If no memory page has been given, get all committed, non-shared and readable memory pages.
+    # If no memory page has been given, get all readable memory pages.
     if not memory_regions:
-        for region in GetMemoryRegions(process_handle):
-            if region["struct"].State != MemoryAllocationStatesEnum.MEM_COMMIT.value: continue
-            if region["struct"].Type != MemoryTypesEnum.MEM_PRIVATE.value: continue
-            if region["struct"].Protect & MemoryProtectionsEnum.PAGE_READABLE.value == 0: continue
-
+        for region in get_memory_regions(pid):
+            if b"r" not in region["struct"].Privileges: continue
             memory_regions.append(region)
 
     memory_regions.sort(key=lambda region: region["address"])
@@ -253,7 +191,10 @@ def SearchValuesByAddresses(
         region_data = (ctypes.c_byte * size)()
 
         # Get data from the region.
-        kernel32.ReadProcessMemory(process_handle, ctypes.c_void_p(base_address), ctypes.byref(region_data), size, None)
+        libc.process_vm_readv(
+            pid, (iovec * 1)(iovec(addressof(region_data), sizeof(region_data))),
+            1, (iovec * 1)(iovec(base_address, sizeof(region_data))), 1, 0
+        )
 
         # Get the value of each address.
         while base_address <= target_address < base_address + size:
@@ -273,8 +214,8 @@ def SearchValuesByAddresses(
             target_address = addresses[address_index]
 
 
-def WriteProcessMemory(
-    process_handle: int,
+def write_process_memory(
+    pid: int,
     address: int,
     pytype: Type[T],
     bufflength: int,
@@ -289,6 +230,8 @@ def WriteProcessMemory(
     data = get_c_type_of(pytype, bufflength)
     data.value = value.encode() if isinstance(value, str) else value
 
-    kernel32.WriteProcessMemory(process_handle, ctypes.c_void_p(address), ctypes.byref(data), bufflength, None)
-
+    libc.process_vm_writev(
+        pid, (iovec * 1)(iovec(addressof(data), sizeof(data))),
+        1, (iovec * 1)(iovec(address, sizeof(data))), 1, 0
+    )
     return value

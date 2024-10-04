@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 
-from win32.win32gui import FindWindow
-from win32.win32process import GetWindowThreadProcessId
 import psutil
+import sys
+
+if "win" in sys.platform:
+    from ..win32.functions import GetProcessIdByWindowTitle
 
 
 def get_process_id_by_process_name(process_name: str) -> int:
@@ -13,12 +15,16 @@ def get_process_id_by_process_name(process_name: str) -> int:
         if process.name() == process_name:
             return process.pid
 
+
 def get_process_id_by_window_title(window_title: str) -> int:
     """
     Get a window title and return its process ID.
     """
-    hwnd = FindWindow(None, window_title)
-    return GetWindowThreadProcessId(hwnd)[1] if hwnd else 0
+    if "win" not in sys.platform:
+        raise OSError("This function is compatible only with Windows OS.")
+
+    return GetProcessIdByWindowTitle(window_title)
+
 
 def pid_exists(pid: int) -> bool:
     """

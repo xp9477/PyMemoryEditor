@@ -4,9 +4,9 @@ from .errors import ProcessIDNotExistsError, ProcessNotFoundError, WindowNotFoun
 from .util import get_process_id_by_process_name, get_process_id_by_window_title, pid_exists
 
 
-class Process(object):
+class ProcessInfo(object):
     """
-    Class representing a process.
+    Class to save information of a process.
     """
 
     __pid = 0

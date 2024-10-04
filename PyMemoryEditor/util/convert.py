@@ -1,10 +1,25 @@
 # -*- coding: utf-8 -*-
 
-from typing import Type
+from typing import Type, TypeVar
 import ctypes
 
 
-def get_c_type_of(pytype: Type, length: int = 1) -> ctypes._SimpleCData:
+T = TypeVar("T")
+
+
+def convert_from_byte_array(byte_array: ctypes.Array, pytype: Type[T], length: int) -> T:
+    """
+    Convert a byte array to a Python type.
+    """
+    if pytype is bytes: return bytes(byte_array)
+    if pytype is str: return bytes(byte_array).decode()
+
+    c_value = get_c_type_of(pytype, length)
+
+    return c_value.__class__.from_buffer(byte_array).value
+
+
+def get_c_type_of(pytype: Type, length) -> ctypes._SimpleCData:
     """
     Return a C type of a primitive type of the Python language.
     """

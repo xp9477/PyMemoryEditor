@@ -14,10 +14,13 @@ on:
 jobs:
   build:
 
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ['3.6', '3.7', '3.8', '3.9', '3.10', '3.11']
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
+        os:
+          - ubuntu-latest
+          - windows-latest
 
     steps:
     - uses: actions/checkout@v2
@@ -31,7 +34,7 @@ jobs:
         pip install -r requirements.txt
     - name: Test with pytest
       run: |
-        pytest tests -v -s
+        pytest tests -v -s -x
     - name: Install package
       run: |
         pip install PyMemoryEditor
